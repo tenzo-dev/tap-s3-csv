@@ -1,5 +1,6 @@
 import itertools
 import re
+import os
 import backoff
 import boto3
 import singer
@@ -48,31 +49,19 @@ class AssumeRoleProvider():
 
 
 @retry_pattern()
-def setup_aws_client(config):
-    role_arn = "arn:aws:iam::{}:role/{}".format(config['account_id'].replace('-', ''),
-                                                config['role_name'])
-    session = Session()
-    fetcher = AssumeRoleCredentialFetcher(
-        session.create_client,
-        session.get_credentials(),
-        role_arn,
-        extra_args={
-            'DurationSeconds': 3600,
-            'RoleSessionName': 'TapS3CSV',
-            'ExternalId': config['external_id']
-        },
-        cache=JSONFileCache()
-    )
+def setup_aws_client():
+    """
+    Initialize a default AWS session
+    :param config: connection config
+    """
+    aws_access_key_id = os.environ.get('singer_aws_access_key_id')
+    aws_secret_key = os.environ.get('singer_aws_secret_key')
+    if not aws_access_key_id or not aws_secret_key:
+        raise ValueError("AWS access key id and secret key not provided.")
 
-    refreshable_session = Session()
-    refreshable_session.register_component(
-        'credential_provider',
-        CredentialResolver([AssumeRoleProvider(fetcher)])
-    )
-
-    LOGGER.info("Attempting to assume_role on RoleArn: %s", role_arn)
-    boto3.setup_default_session(botocore_session=refreshable_session)
-
+    LOGGER.info("Attempting to create AWS session")
+    boto3.setup_default_session(aws_access_key_id=aws_access_key_id,
+                                aws_secret_access_key=aws_secret_key)
 
 def get_sampled_schema_for_table(config, table_spec):
     LOGGER.info('Sampling records to determine table schema.')
@@ -207,8 +196,11 @@ def get_input_files_for_table(config, table_spec, modified_since=None):
 
 
 @retry_pattern()
-def list_files_in_bucket(bucket, search_prefix=None):
-    s3_client = boto3.client('s3')
+def list_files_in_bucket(bucket, search_prefix=None, aws_endpoint_url=None):
+    if aws_endpoint_url:
+        s3_client = boto3.client('s3', endpoint_url=aws_endpoint_url)
+    else:
+        s3_client = boto3.client('s3')
 
     s3_object_count = 0
 
